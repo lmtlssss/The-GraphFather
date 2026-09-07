@@ -18,6 +18,8 @@ struct Blueprint {
     components: Vec<String>,
     layers: Vec<String>,
     next: String,
+    #[serde(default)]
+    dependencies: BTreeMap<String, Vec<String>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Cursor {
@@ -52,7 +54,11 @@ struct Session {
     issues: Vec<Issue>,
     receipts: Vec<Receipt>,
     proof_generation: Option<u64>,
+    #[serde(default)] revision: u64,
+    #[serde(default)] input_epochs: BTreeMap<String,u64>,
 }
+#[derive(Deserialize)]
+struct Revise { expected_revision:u64, reason:String, blueprint:Blueprint, #[serde(default)] invalidate:BTreeMap<String,String> }
 pub struct Store {
     c: Connection,
     id: String,
@@ -91,6 +97,7 @@ impl Store {
             issues: vec![],
             receipts: vec![],
             proof_generation: None,
+            revision: 0, input_epochs: BTreeMap::new(),
         }
     }
     fn load(&self) -> Result<Session, Box<dyn std::error::Error>> {
@@ -109,7 +116,7 @@ impl Store {
                 if s.schema != SCHEMA || s.session_id != self.id {
                     return Err("invalid session document".into());
                 }
-                Ok(s)
+                Ok(Session { revision: s.revision, input_epochs: s.input_epochs, ..s })
             }
         }
     }
@@ -135,13 +142,17 @@ impl Store {
         if s.schema != SCHEMA || s.session_id != self.id {
             return Err("invalid session document".into());
         };
+        let before = serde_json::to_string(&s)?;
         f(&mut s)?;
+        if serde_json::to_string(&s)? == before { tx.commit()?; return Ok(view(&s)); }
+        s.revision = s.revision.saturating_add(1);
         tx.execute("INSERT INTO sessions(id,document)VALUES(?,?) ON CONFLICT(id)DO UPDATE SET document=excluded.document",params![self.id,serde_json::to_string(&s)?])?;
         tx.execute(
             "INSERT INTO events(session_id,at,kind,data)VALUES(?,?,?,?)",
             params![self.id, now(), k, serde_json::to_string(&data)?],
         )?;
         tx.commit()?;
+        publish(&s, &self.c)?;
         Ok(view(&s))
     }
     pub fn status(&self) -> Result<Value, Box<dyn std::error::Error>> {
@@ -160,6 +171,7 @@ impl Store {
         };
         let b: Blueprint = serde_json::from_slice(&bytes)?;
         valid(&b)?;
+        validate_dependencies(&b)?;
         self.mutate(
             "plan",
             json!({"objective_length":b.objective.len()}),
@@ -177,6 +189,23 @@ impl Store {
                 Ok(())
             },
         )
+    }
+    pub fn revise(&mut self, file: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        let mut bytes=Vec::new(); if file=="-" { io::stdin().take(131073).read_to_end(&mut bytes)?; } else { bytes=fs::read(file)?; }
+        if bytes.len()>131072 { return Err("revise input exceeds 128 KiB".into()); }
+        let req: Revise=serde_json::from_slice(&bytes)?; valid(&req.blueprint)?; validate_dependencies(&req.blueprint)?;
+        self.mutate("revise",json!({"reason":req.reason}),move|s|{
+            if s.revision!=req.expected_revision{return Err("stale revision".into())}
+            let prior=s.blueprint.clone().ok_or("plan a blueprint first")?;
+            if prior.objective==req.blueprint.objective&&prior.components==req.blueprint.components&&prior.layers==req.blueprint.layers&&prior.next==req.blueprint.next&&prior.dependencies==req.blueprint.dependencies&&req.invalidate.is_empty(){return Ok(())}
+            s.blueprint=Some(req.blueprint.clone());
+            s.marks.retain(|l,_|req.blueprint.layers.contains(l));
+            for m in s.marks.values_mut(){m.retain(|c,_|req.blueprint.components.contains(c));}
+            for (c,l) in &req.invalidate { if let Some(i)=req.blueprint.layers.iter().position(|x|x==l){for x in req.blueprint.layers.iter().skip(i){s.marks.entry(x.clone()).or_default().remove(c);}} }
+            s.generation+=1;s.proof_generation=None;
+            let next=req.blueprint.layers.iter().find(|l|req.blueprint.components.iter().any(|c|s.marks.get(*l).and_then(|m|m.get(c)).is_none())).cloned();
+            if let Some(l)=next{s.phase="build".into();s.cursor=Cursor{layer:Some(l.clone()),incomplete_components:req.blueprint.components.iter().filter(|c|s.marks.get(&l).and_then(|m|m.get(*c)).is_none()).cloned().collect(),next:req.blueprint.next.clone()};}else{s.phase="proof".into();s.cursor.next="run a whole check".into();} Ok(())
+        })
     }
     pub fn cursor(&mut self, t: String) -> Result<Value, Box<dyn std::error::Error>> {
         bound(&t, MAX, "cursor")?;
@@ -350,6 +379,8 @@ impl Store {
             issues: vec![],
             receipts: vec![],
             proof_generation: None,
+            revision: 0,
+            input_epochs: BTreeMap::new(),
         };
         tx.execute("INSERT INTO sessions(id,document)VALUES(?,?) ON CONFLICT(id)DO UPDATE SET document=excluded.document",params![self.id,serde_json::to_string(&fresh)?])?;
         tx.execute(
@@ -517,6 +548,14 @@ fn valid(b: &Blueprint) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+fn validate_dependencies(b:&Blueprint)->Result<(),Box<dyn std::error::Error>>{
+ for (c,ps) in &b.dependencies { component(b,c)?; let mut seen=HashSet::new(); for p in ps { component(b,p)?; if p==c||!seen.insert(p){return Err("invalid dependency edge".into())} } }
+ fn visit(x:&str,b:&Blueprint,stack:&mut HashSet<String>,done:&mut HashSet<String>)->bool{if done.contains(x){return false} if !stack.insert(x.into()){return true} for p in b.dependencies.get(x).into_iter().flatten(){if visit(p,b,stack,done){return true}} stack.remove(x);done.insert(x.into());false}
+ let mut st=HashSet::new();let mut d=HashSet::new();for c in &b.components{if visit(c,b,&mut st,&mut d){return Err("dependency cycle".into())}} Ok(())
+}
+fn publish(s:&Session,c:&Connection)->Result<(),Box<dyn std::error::Error>>{
+ let root=std::env::var_os("PLUGIN_DATA").map(std::path::PathBuf::from).unwrap_or_else(||std::path::PathBuf::from("."));let dir=root.join("plans");fs::create_dir_all(&dir)?;perm(&dir,0o700)?;let name=hex(&Sha256::digest(s.session_id.as_bytes()));let p=dir.join(format!("{name}.md"));let b=s.blueprint.as_ref().map(|b|format!("objective: {}\ncomponents: {:?}\nlayers: {:?}\ndependencies: {:?}\n",b.objective,b.components,b.layers,b.dependencies)).unwrap_or_default();let text=format!("# the graphfather plan\n\n{b}\nphase: {}\nrevision: {}\ngeneration: {}\nnext: {}\n",s.phase,s.revision,s.generation,s.cursor.next);if fs::read_to_string(&p).ok().as_deref()!=Some(&text){let t=p.with_extension("tmp");fs::write(&t,text)?;perm(&t,0o600)?;fs::rename(t,p)?;}Ok(())
 }
 fn project(s: &Session) -> Result<&Blueprint, Box<dyn std::error::Error>> {
     s.blueprint

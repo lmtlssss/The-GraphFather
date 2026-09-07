@@ -14,7 +14,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut a: Vec<String> = env::args().skip(1).collect();
     if matches!(a.first().map(String::as_str), Some("--version" | "version")) {
-        println!("the-graphfather 0.1.0");
+        println!("the-graphfather {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let mut data = None;
@@ -69,6 +69,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let out = match cmd {
         "status" => s.status()?,
         "plan" => s.plan(a.get(1).ok_or("plan requires FILE")?)?,
+        "revise" => s.revise(a.get(1).ok_or("revise requires FILE")?)?,
         "cursor" => s.cursor(a[1..].join(" "))?,
         "mark" => s.mark(a.get(1).ok_or("component")?, a.get(2).ok_or("evidence")?)?,
         "advance" => s.advance()?,
