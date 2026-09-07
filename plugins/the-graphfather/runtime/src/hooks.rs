@@ -1,5 +1,6 @@
 use crate::state::Store;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read},
     path::Path,
@@ -28,6 +29,7 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let command = input
             .pointer("/tool_input/command")
             .and_then(Value::as_str)
+            .or_else(|| input.pointer("/tool_input/cmd").and_then(Value::as_str))
             .unwrap_or("");
         if is_recognized_test(command) && !contains_wrapper(command) {
             return deny(
@@ -64,8 +66,23 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let skill = std::env::var("PLUGIN_ROOT")
         .map(|p| format!("{p}/skills/build/SKILL.md"))
         .unwrap_or_else(|_| "plugin skill: skills/build/SKILL.md".into());
+    let plan = data
+        .join("plans")
+        .join(format!("{}.md", hex(&Sha256::digest(id.as_bytes()))));
+    let revision = state["revision"].as_u64().unwrap_or(0);
+    let prefix = format!(
+        "{} --session {} --revision {}",
+        shell_quote(&exe),
+        shell_quote(&id),
+        revision
+    );
+    let instruction = match event {
+        "UserPromptSubmit" => " reconcile the latest user message with the pinned plan before continuing; use revise only for an actual steer, and do not reset for questions or no-op turns.",
+        _ => " read the pinned plan before continuing; use the guarded revision for plan changes.",
+    };
     let context = format!(
-        "phase={} layer={} remaining={} | next={} | read {} | command=\"{}\" --session {} | objective={}",
+        "command={} | session={} | revision={} | plan={} | skill={} | phase={} layer={} remaining={} | next={} | objective={} |{}",
+        prefix, shell_quote(&id), revision, shell_quote(&plan.display().to_string()), shell_quote(&skill),
         state["phase"],
         state.pointer("/cursor/layer").unwrap_or(&Value::Null),
         remaining,
@@ -73,16 +90,19 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .pointer("/cursor/next")
             .and_then(Value::as_str)
             .unwrap_or("plan a blueprint"),
-        skill,
-        exe,
-        id,
-        objective
+        objective, instruction
     );
     println!(
         "{}",
         json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":cut(&context,1500)}})
     );
     Ok(())
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 fn deny(reason: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!(
