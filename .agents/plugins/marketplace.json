@@ -1,14 +1,14 @@
 {
-  "name": "the-gitfather",
+  "name": "the-graphfather",
   "interface": {
-    "displayName": "The Gitfather"
+    "displayName": "The GraphFather"
   },
   "plugins": [
     {
-      "name": "the-gitfather",
+      "name": "the-graphfather",
       "source": {
         "source": "local",
-        "path": "./plugins/the-gitfather"
+        "path": "./plugins/the-graphfather"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -10,9 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked --manifest-path plugins/the-gitfather/runtime/Cargo.toml
-      - env: {GH_TOKEN: '${{ github.token }}'}
+      - name: validate release tag
+        env: {RELEASE_TAG: '${{ inputs.tag }}'}
         run: |
-          install -m 0755 plugins/the-gitfather/runtime/target/release/the-gitfather the-gitfather-x86_64-unknown-linux-gnu
-          sha256sum the-gitfather-x86_64-unknown-linux-gnu > the-gitfather-x86_64-unknown-linux-gnu.sha256
-          gh release create "${{ inputs.tag }}" the-gitfather-x86_64-unknown-linux-gnu* --title "${{ inputs.tag }}" --generate-notes
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+      - run: cargo build --locked --manifest-path plugins/the-graphfather/runtime/Cargo.toml
+      - run: cargo test --locked --manifest-path plugins/the-graphfather/runtime/Cargo.toml
+      - run: GRAPHFATHER_BIN=plugins/the-graphfather/runtime/target/debug/the-graphfather scripts/prove-system.sh
+      - run: cargo build --release --locked --manifest-path plugins/the-graphfather/runtime/Cargo.toml
+      - env: {GH_TOKEN: '${{ github.token }}', RELEASE_TAG: '${{ inputs.tag }}'}
+        run: |
+          install -m 0755 plugins/the-graphfather/runtime/target/release/the-graphfather the-graphfather-x86_64-unknown-linux-gnu
+          sha256sum the-graphfather-x86_64-unknown-linux-gnu > the-graphfather-x86_64-unknown-linux-gnu.sha256
+          gh release create "$RELEASE_TAG" the-graphfather-x86_64-unknown-linux-gnu the-graphfather-x86_64-unknown-linux-gnu.sha256 --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes

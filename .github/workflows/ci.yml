@@ -6,6 +6,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --manifest-path plugins/the-gitfather/runtime/Cargo.toml
-      - run: python3 -m json.tool plugins/the-gitfather/.codex-plugin/plugin.json >/dev/null
-      - run: python3 -m json.tool plugins/the-gitfather/hooks/hooks.json >/dev/null
+      - run: cargo build --locked --manifest-path plugins/the-graphfather/runtime/Cargo.toml
+      - run: cargo test --locked --manifest-path plugins/the-graphfather/runtime/Cargo.toml
+      - run: GRAPHFATHER_BIN=plugins/the-graphfather/runtime/target/debug/the-graphfather scripts/prove-system.sh
+      - run: python3 -m json.tool plugins/the-graphfather/.codex-plugin/plugin.json >/dev/null
+      - run: python3 -m json.tool plugins/the-graphfather/hooks/hooks.json >/dev/null

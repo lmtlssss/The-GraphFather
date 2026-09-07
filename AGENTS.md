@@ -1,4 +1,4 @@
-# the gitfather
+# the graphfather
 
 source: SPEC.md and the person's later instructions.
 

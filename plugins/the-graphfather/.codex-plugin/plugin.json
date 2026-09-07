@@ -1,0 +1,18 @@
+{
+  "name": "the-graphfather",
+  "version": "0.1.0",
+  "description": "“i’m gonna make him an offer he can’t refuse.” — for Codex agents with commitment issues.",
+  "author": {
+    "name": "lmtlssss"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "The GraphFather",
+    "shortDescription": "project state and lifecycle guardrails for Codex.",
+    "longDescription": "project structure and build sequencing for Codex conversations.",
+    "developerName": "lmtlssss",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use the-graphfather project state and lifecycle guardrails."
+  }
+}
