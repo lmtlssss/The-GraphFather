@@ -2,7 +2,7 @@
 
 “i’m gonna make him an offer he can’t refuse.” — for Codex agents with commitment issues.
 
-project structure and build sequencing for Codex conversations.
+project structure and build sequencing for Codex conversations. release v0.2.0.
 
 finish the scaffold. complete each layer across the whole project. test the
 joined system, then repair the parts that failed.
@@ -66,6 +66,16 @@ project. a short task gets a short plan; the person does not fill out forms.
 
 the cursor survives a new turn, resume, and compaction. CompactVeteran continues
 to own its handoff behavior; RecentlyDivorced continues to own conversation labels.
+
+## living plan
+
+the CLI publishes the accepted plan and progress to the private Markdown file
+reported by `status`: `PLUGIN_DATA/plans/<sha256-session-id>.md`. SQLite is the
+transactional authority; the agent reconciles the projection on every turn and
+does not edit it independently. `revise FILE` (or `revise -`) uses an
+`expected_revision`, reason, complete blueprint, and optional invalidation.
+valid progress is preserved, dependency effects are applied transitively, and
+identical revisions do not rewrite bytes or mtime.
 
 ## controls
 

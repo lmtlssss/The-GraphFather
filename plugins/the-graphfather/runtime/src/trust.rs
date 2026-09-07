@@ -39,7 +39,7 @@ pub fn set(enable: bool) -> io::Result<()> {
         }
     };
     send(
-        json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"the-graphfather","version":"0.1.0"}}}),
+        json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"the-graphfather","version":env!("CARGO_PKG_VERSION")}}}),
     )?;
     read(1)?;
     send(json!({"method":"initialized","params":{}}))?;
