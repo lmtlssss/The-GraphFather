@@ -31,3 +31,6 @@ assert stat.S_IMODE(os.stat(os.path.join(d,'state.sqlite')).st_mode)==0o600
 sentinel='PRIVATE_ARGV_SENTINEL_9f6ec';run('patch','check','smoke','sentinel','--','/bin/echo',sentinel);assert sentinel.encode() not in open(os.path.join(d,'state.sqlite'),'rb').read()
 print('system proof passed')
 PY
+GRAPHFATHER_BIN="$bin" python3 "$root/scripts/prove-steering.py"
+GRAPHFATHER_BIN="$bin" python3 "$root/scripts/prove-receipts.py"
+GRAPHFATHER_BIN="$bin" python3 "$root/scripts/prove-publication.py"

@@ -249,7 +249,7 @@ impl Store {
                     next: b.next.clone(),
                 };
                 s.blueprint = Some(b);
-                s.revision = 1;
+                s.revision = s.revision.saturating_add(1).max(1);
                 Ok(())
             },
         )
@@ -532,9 +532,8 @@ impl Store {
             |s| {
                 project(s)?;
                 s.generation += 1;
-                for c in s.input_epochs.values_mut() {
-                    *c = c.saturating_add(1);
-                }
+                let ids = s.blueprint.as_ref().map(|b| b.components.clone()).unwrap_or_default();
+                for id in ids { *s.input_epochs.entry(id).or_insert(0) += 1; }
                 s.proof_generation = None;
                 if s.phase == "complete" {
                     s.phase = "proof".into();
@@ -733,11 +732,7 @@ impl Store {
                 };
                 q.exit_code = Some(code);
                 if kind == "whole" {
-                    s.proof_generation = if ok && s.generation == g {
-                        Some(g)
-                    } else {
-                        None
-                    }
+                    if s.generation == g { s.proof_generation = if ok { Some(g) } else { None }; }
                 }
                 Ok(())
             },
