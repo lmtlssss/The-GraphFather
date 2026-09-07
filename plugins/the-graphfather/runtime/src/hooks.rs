@@ -66,9 +66,14 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let skill = std::env::var("PLUGIN_ROOT")
         .map(|p| format!("{p}/skills/build/SKILL.md"))
         .unwrap_or_else(|_| "plugin skill: skills/build/SKILL.md".into());
-    let plan = data
-        .join("plans")
-        .join(format!("{}.md", hex(&Sha256::digest(id.as_bytes()))));
+    let plan = state
+        .get("plan_path")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            data.join("plans")
+                .join(format!("{}.md", hex(&Sha256::digest(id.as_bytes()))))
+        });
     let revision = state["revision"].as_u64().unwrap_or(0);
     let prefix = format!(
         "{} --session {} --revision {}",
@@ -80,17 +85,22 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
         "UserPromptSubmit" => " reconcile the latest user message with the pinned plan before continuing; use revise only for an actual steer, and do not reset for questions or no-op turns.",
         _ => " read the pinned plan before continuing; use the guarded revision for plan changes.",
     };
-    let context = format!(
-        "command={} | session={} | revision={} | plan={} | skill={} | phase={} layer={} remaining={} | next={} | objective={} |{}",
-        prefix, shell_quote(&id), revision, shell_quote(&plan.display().to_string()), shell_quote(&skill),
-        state["phase"],
-        state.pointer("/cursor/layer").unwrap_or(&Value::Null),
-        remaining,
+    let next = cut(
         state
             .pointer("/cursor/next")
             .and_then(Value::as_str)
             .unwrap_or("plan a blueprint"),
-        objective, instruction
+        240,
+    );
+    let objective = cut(objective, 240);
+    let context = format!(
+        "command={} | session={} | revision={} | plan={} | skill={} |{} phase={} layer={} remaining={} | next={} | objective={}",
+        prefix, shell_quote(&id), revision, shell_quote(&plan.display().to_string()), shell_quote(&skill),
+        instruction,
+        state["phase"],
+        state.pointer("/cursor/layer").unwrap_or(&Value::Null),
+        remaining,
+        next, objective
     );
     println!(
         "{}",
