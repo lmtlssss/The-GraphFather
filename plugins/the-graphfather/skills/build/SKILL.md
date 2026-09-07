@@ -42,9 +42,9 @@ transitive dependents from the earliest affected layer. identical blueprints
 without invalidation are no-ops. next-action-only revisions preserve phase;
 semantic changes reopen whole proof.
 
-for a guarded write, pass the revision returned by `status` or the lifecycle
-hook as `expected_revision` (equivalently `--revision N` when the installed CLI
-offers that flag). use this working example:
+for every agent or subagent state write, pass the current revision from `status`
+or the lifecycle hook as `--revision N`. `revise` also includes the matching
+`expected_revision` in its JSON. use this working example:
 
 ```json
 {"expected_revision":1,"reason":"add the export view",
@@ -54,9 +54,11 @@ offers that flag). use this working example:
  "invalidate":{"ui":"behavior"}}
 ```
 
-If the revision is stale, refresh `status` or the hook context and retry with
-the new revision. After a successful `revise`, use the returned new revision
-for the next guarded write. Preserve valid work; steer with `revise`, not reset.
+if a revision conflict occurs, refresh `status`, reassess the latest plan and
+intended change, then issue an appropriate new write; never merely swap the
+revision on the stale operation. after an initial `plan` or successful `revise`,
+use the returned revision for the next guarded write. preserve valid work; steer
+with `revise`, not reset.
 
 `check smoke|narrow|safety LABEL --component ID -- COMMAND` scopes a receipt to
 one component; `whole` remains unscoped. unscoped observed patches
