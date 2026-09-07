@@ -24,7 +24,16 @@ register_marketplace() {
  if [ -d "$source" ]; then
   CODEX_HOME="$codex_dir" "$codex" plugin marketplace add "$source"
  else
-  CODEX_HOME="$codex_dir" "$codex" plugin marketplace add "$source" --ref "v${version#the-graphfather }" &&
+  desired_ref="v${version#the-graphfather }"
+  regerr=$(mktemp)
+  if CODEX_HOME="$codex_dir" "$codex" plugin marketplace add "$source" --ref "$desired_ref" 2>"$regerr"; then rm -f "$regerr"; return 0; fi
+  if ! grep -Fq "already added from a different source" "$regerr"; then cat "$regerr" >&2; rm -f "$regerr"; return 1; fi
+  rm -f "$regerr"
+  git ls-remote --exit-code "$source" "refs/tags/$desired_ref" >/dev/null
+  config_backup="$data/.marketplace-config.backup.$$"
+  [ -f "$codex_dir/config.toml" ] && { cp "$codex_dir/config.toml" "$config_backup"; chmod 600 "$config_backup"; }
+  CODEX_HOME="$codex_dir" "$codex" plugin marketplace remove the-graphfather >/dev/null
+  CODEX_HOME="$codex_dir" "$codex" plugin marketplace add "$source" --ref "$desired_ref" &&
    CODEX_HOME="$codex_dir" "$codex" plugin marketplace upgrade the-graphfather
  fi
 }
@@ -33,7 +42,7 @@ if ! mv "$candidate" "$old" || ! register_marketplace ||
  ! CODEX_HOME="$codex_dir" CODEX_BIN="$codex" "$old" --data-dir "$data" trust; then
  rm -f "$candidate"
  rollback
- echo "install rolled back" >&2
+ if [ -n "${config_backup:-}" ] && [ -e "$config_backup" ]; then echo "binary restored; previous config backup: $config_backup" >&2; else echo "install rolled back" >&2; fi
  exit 1
 fi
-rm -f "$backup";printf '%s\n' "the-graphfather installed at $old"
+rm -f "$backup" "${config_backup:-}";printf '%s\n' "the-graphfather installed at $old"
