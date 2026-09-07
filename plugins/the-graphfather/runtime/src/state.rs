@@ -62,6 +62,7 @@ struct Revise { expected_revision:u64, reason:String, blueprint:Blueprint, #[ser
 pub struct Store {
     c: Connection,
     id: String,
+    data: std::path::PathBuf,
 }
 impl Store {
     pub fn open(d: &Path, id: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -79,7 +80,7 @@ impl Store {
         if v != SCHEMA as i64 {
             return Err("unsupported state schema".into());
         }
-        Ok(Self { c, id: id.into() })
+        Ok(Self { c, id: id.into(), data:d.to_path_buf() })
     }
     fn empty(&self) -> Session {
         Session {
@@ -145,18 +146,17 @@ impl Store {
         let before = serde_json::to_string(&s)?;
         f(&mut s)?;
         if serde_json::to_string(&s)? == before { tx.commit()?; return Ok(view(&s)); }
-        s.revision = s.revision.saturating_add(1);
         tx.execute("INSERT INTO sessions(id,document)VALUES(?,?) ON CONFLICT(id)DO UPDATE SET document=excluded.document",params![self.id,serde_json::to_string(&s)?])?;
         tx.execute(
             "INSERT INTO events(session_id,at,kind,data)VALUES(?,?,?,?)",
             params![self.id, now(), k, serde_json::to_string(&data)?],
         )?;
         tx.commit()?;
-        publish(&s, &self.c)?;
+        publish(&s, &self.data)?;
         Ok(view(&s))
     }
     pub fn status(&self) -> Result<Value, Box<dyn std::error::Error>> {
-        Ok(view(&self.load()?))
+        let s=self.load()?; publish(&s,&self.data)?; Ok(view(&s))
     }
     pub fn plan(&mut self, file: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let bytes = if file == "-" {
@@ -186,6 +186,7 @@ impl Store {
                     next: b.next.clone(),
                 };
                 s.blueprint = Some(b);
+                s.revision = 1;
                 Ok(())
             },
         )
@@ -198,6 +199,8 @@ impl Store {
             if s.revision!=req.expected_revision{return Err("stale revision".into())}
             let prior=s.blueprint.clone().ok_or("plan a blueprint first")?;
             if prior.objective==req.blueprint.objective&&prior.components==req.blueprint.components&&prior.layers==req.blueprint.layers&&prior.next==req.blueprint.next&&prior.dependencies==req.blueprint.dependencies&&req.invalidate.is_empty(){return Ok(())}
+            bound(&req.reason, MAX, "reason")?;
+            s.revision=s.revision.saturating_add(1);
             s.blueprint=Some(req.blueprint.clone());
             s.marks.retain(|l,_|req.blueprint.layers.contains(l));
             for m in s.marks.values_mut(){m.retain(|c,_|req.blueprint.components.contains(c));}
@@ -379,7 +382,7 @@ impl Store {
             issues: vec![],
             receipts: vec![],
             proof_generation: None,
-            revision: 0,
+            revision: old.revision.saturating_add(1),
             input_epochs: BTreeMap::new(),
         };
         tx.execute("INSERT INTO sessions(id,document)VALUES(?,?) ON CONFLICT(id)DO UPDATE SET document=excluded.document",params![self.id,serde_json::to_string(&fresh)?])?;
@@ -554,8 +557,8 @@ fn validate_dependencies(b:&Blueprint)->Result<(),Box<dyn std::error::Error>>{
  fn visit(x:&str,b:&Blueprint,stack:&mut HashSet<String>,done:&mut HashSet<String>)->bool{if done.contains(x){return false} if !stack.insert(x.into()){return true} for p in b.dependencies.get(x).into_iter().flatten(){if visit(p,b,stack,done){return true}} stack.remove(x);done.insert(x.into());false}
  let mut st=HashSet::new();let mut d=HashSet::new();for c in &b.components{if visit(c,b,&mut st,&mut d){return Err("dependency cycle".into())}} Ok(())
 }
-fn publish(s:&Session,c:&Connection)->Result<(),Box<dyn std::error::Error>>{
- let root=std::env::var_os("PLUGIN_DATA").map(std::path::PathBuf::from).unwrap_or_else(||std::path::PathBuf::from("."));let dir=root.join("plans");fs::create_dir_all(&dir)?;perm(&dir,0o700)?;let name=hex(&Sha256::digest(s.session_id.as_bytes()));let p=dir.join(format!("{name}.md"));let b=s.blueprint.as_ref().map(|b|format!("objective: {}\ncomponents: {:?}\nlayers: {:?}\ndependencies: {:?}\n",b.objective,b.components,b.layers,b.dependencies)).unwrap_or_default();let text=format!("# the graphfather plan\n\n{b}\nphase: {}\nrevision: {}\ngeneration: {}\nnext: {}\n",s.phase,s.revision,s.generation,s.cursor.next);if fs::read_to_string(&p).ok().as_deref()!=Some(&text){let t=p.with_extension("tmp");fs::write(&t,text)?;perm(&t,0o600)?;fs::rename(t,p)?;}Ok(())
+fn publish(s:&Session,root:&Path)->Result<(),Box<dyn std::error::Error>>{
+ let dir=root.join("plans");fs::create_dir_all(&dir)?;perm(&dir,0o700)?;let name=hex(&Sha256::digest(s.session_id.as_bytes()));let p=dir.join(format!("{name}.md"));let b=s.blueprint.as_ref().map(|b|format!("objective: {}\ncomponents: {:?}\nlayers: {:?}\ndependencies: {:?}\n",b.objective,b.components,b.layers,b.dependencies)).unwrap_or_default();let text=format!("# the graphfather plan\n\n{b}\nphase: {}\nrevision: {}\ngeneration: {}\nnext: {}\n",s.phase,s.revision,s.generation,s.cursor.next);if fs::read_to_string(&p).ok().as_deref()!=Some(&text){let t=dir.join(format!(".{name}.{}.tmp",now()));fs::write(&t,text)?;perm(&t,0o600)?;fs::rename(t,p)?;}Ok(())
 }
 fn project(s: &Session) -> Result<&Blueprint, Box<dyn std::error::Error>> {
     s.blueprint
@@ -570,7 +573,7 @@ fn component(b: &Blueprint, c: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 fn view(s: &Session) -> Value {
-    json!({"schema":s.schema,"session_id":s.session_id,"phase":s.phase,"generation":s.generation,"blueprint":s.blueprint,"cursor":s.cursor,"marks":s.marks,"issues":s.issues,"receipts":s.receipts,"proof_generation":s.proof_generation})
+    json!({"schema":s.schema,"session_id":s.session_id,"phase":s.phase,"generation":s.generation,"revision":s.revision,"input_epochs":s.input_epochs,"blueprint":s.blueprint,"cursor":s.cursor,"marks":s.marks,"issues":s.issues,"receipts":s.receipts,"proof_generation":s.proof_generation})
 }
 #[cfg(unix)]
 fn perm(p: &Path, m: u32) -> std::io::Result<()> {
