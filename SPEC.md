@@ -1,5 +1,13 @@
 # the graphfather — build contract
 
+## v0.2.1 explicit handoff bridge
+
+CompactVeteran may provide a bounded Scope field naming a planned GraphFather
+session. SessionStart records an alias only for that explicit origin; unknown or
+unplanned origins remain independent. Aliases preserve the canonical SQLite
+ledger, receipts, marks, revisions, and Markdown plan across handoffs and
+env-free resume. Working-directory equality is never an identity signal.
+
 ## v0.2 live-plan amendment (latest person authority)
 
 the person approved a living Markdown plan per conversation, reconciled on every

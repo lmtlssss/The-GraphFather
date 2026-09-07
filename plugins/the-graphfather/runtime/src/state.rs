@@ -77,6 +77,27 @@ pub struct Store {
     data: std::path::PathBuf,
     expected_revision: Option<u64>,
 }
+fn resolve_alias(c: &Connection, id: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut current = id.to_owned();
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(current.clone()) {
+            return Err("session alias cycle".into());
+        }
+        let next: Option<String> = c
+            .query_row(
+                "SELECT canonical FROM session_aliases WHERE alias=?",
+                [&current],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match next {
+            Some(x) => current = x,
+            None => break,
+        }
+    }
+    Ok(current)
+}
 impl Store {
     pub fn open(d: &Path, id: &str) -> Result<Self, Box<dyn std::error::Error>> {
         if id.trim().is_empty() || id.len() > 256 {
@@ -88,17 +109,83 @@ impl Store {
         let c = Connection::open(&p)?;
         perm(&p, 0o600)?;
         c.busy_timeout(std::time::Duration::from_secs(5))?;
-        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS graphfather_schema(version INTEGER NOT NULL); INSERT INTO graphfather_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM graphfather_schema); CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL);")?;
+        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS graphfather_schema(version INTEGER NOT NULL); INSERT INTO graphfather_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM graphfather_schema); CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS session_aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL);")?;
         let v: i64 = c.query_row("SELECT version FROM graphfather_schema", [], |r| r.get(0))?;
         if v != SCHEMA as i64 {
             return Err("unsupported state schema".into());
         }
+        let canonical = resolve_alias(&c, id)?;
         Ok(Self {
             c,
-            id: id.into(),
+            id: canonical,
             data: fs::canonicalize(d)?,
             expected_revision: None,
         })
+    }
+    pub fn canonical_id(&self) -> &str {
+        &self.id
+    }
+    pub fn register_handoff(&mut self, origin: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if origin.trim().is_empty() || origin == self.id || origin.len() > 256 {
+            return Ok(());
+        }
+        let tx = self
+            .c
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let canonical = resolve_alias(&tx, origin)?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT document FROM sessions WHERE id=?",
+                [&canonical],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            tx.commit()?;
+            return Ok(());
+        };
+        let source: Session = serde_json::from_str(&raw)?;
+        if source.blueprint.is_none() {
+            tx.commit()?;
+            return Ok(());
+        }
+        if canonical == self.id {
+            tx.commit()?;
+            return Ok(());
+        }
+        let destination: Option<String> = tx
+            .query_row(
+                "SELECT document FROM sessions WHERE id=?",
+                [&self.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(raw) = destination {
+            let existing: Session = serde_json::from_str(&raw)?;
+            if existing.blueprint.is_some() {
+                return Err("handoff destination already planned".into());
+            }
+        }
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT canonical FROM session_aliases WHERE alias=?",
+                [&self.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(x) = existing {
+            if resolve_alias(&tx, &x)? != canonical {
+                return Err("session alias conflict".into());
+            }
+        } else {
+            tx.execute(
+                "INSERT INTO session_aliases(alias,canonical) VALUES(?,?)",
+                params![self.id, canonical],
+            )?;
+        }
+        tx.commit()?;
+        self.id = canonical;
+        Ok(())
     }
     pub fn set_expected_revision(&mut self, revision: Option<u64>) {
         self.expected_revision = revision;
@@ -532,8 +619,14 @@ impl Store {
             |s| {
                 project(s)?;
                 s.generation += 1;
-                let ids = s.blueprint.as_ref().map(|b| b.components.clone()).unwrap_or_default();
-                for id in ids { *s.input_epochs.entry(id).or_insert(0) += 1; }
+                let ids = s
+                    .blueprint
+                    .as_ref()
+                    .map(|b| b.components.clone())
+                    .unwrap_or_default();
+                for id in ids {
+                    *s.input_epochs.entry(id).or_insert(0) += 1;
+                }
                 s.proof_generation = None;
                 if s.phase == "complete" {
                     s.phase = "proof".into();
@@ -732,7 +825,9 @@ impl Store {
                 };
                 q.exit_code = Some(code);
                 if kind == "whole" {
-                    if s.generation == g { s.proof_generation = if ok { Some(g) } else { None }; }
+                    if s.generation == g {
+                        s.proof_generation = if ok { Some(g) } else { None };
+                    }
                 }
                 Ok(())
             },

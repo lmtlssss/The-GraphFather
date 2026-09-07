@@ -71,6 +71,9 @@ to own its handoff behavior; RecentlyDivorced continues to own conversation labe
 Codex's native `/plan` remains unchanged; GraphFather's `revise` updates only its
 own accepted project plan.
 
+The optional explicit bridge fixture uses temporary state: set CV_BIN and GF_BIN,
+then run scripts/prove-compactveteran.py. It never uses cwd as session identity.
+
 ## living plan
 
 the CLI publishes the accepted plan and progress to the private Markdown file

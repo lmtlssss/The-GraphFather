@@ -23,6 +23,12 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| std::env::var("CODEX_THREAD_ID").ok())
         .ok_or("session_id required")?;
     let mut store = Store::open(data, &id)?;
+    if event == "SessionStart" {
+        if let Some(origin) = handoff_origin() {
+            store.register_handoff(&origin)?;
+        }
+    }
+    let canonical_id = store.canonical_id().to_owned();
     let state = store.status()?;
     if event == "PreToolUse" {
         let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
@@ -71,14 +77,16 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(Value::as_str)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            data.join("plans")
-                .join(format!("{}.md", hex(&Sha256::digest(id.as_bytes()))))
+            data.join("plans").join(format!(
+                "{}.md",
+                hex(&Sha256::digest(canonical_id.as_bytes()))
+            ))
         });
     let revision = state["revision"].as_u64().unwrap_or(0);
     let prefix = format!(
         "{} --session {} --revision {}",
         shell_quote(&exe),
-        shell_quote(&id),
+        shell_quote(&canonical_id),
         revision
     );
     let instruction = match event {
@@ -95,7 +103,7 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let objective = cut(objective, 240);
     let context = format!(
         "command={} | session={} | revision={} | plan={} | skill={} |{} phase={} layer={} remaining={} | next={} | objective={}",
-        prefix, shell_quote(&id), revision, shell_quote(&plan.display().to_string()), shell_quote(&skill),
+        prefix, shell_quote(&canonical_id), revision, shell_quote(&plan.display().to_string()), shell_quote(&skill),
         instruction,
         state["phase"],
         state.pointer("/cursor/layer").unwrap_or(&Value::Null),
@@ -107,6 +115,38 @@ pub fn run(data: &Path) -> Result<(), Box<dyn std::error::Error>> {
         json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":cut(&context,1500)}})
     );
     Ok(())
+}
+fn handoff_origin() -> Option<String> {
+    let map = std::env::var("COMPACTVETERAN_HANDOFF_MAP").ok()?;
+    let mut file = std::fs::File::open(map).ok()?;
+    let mut bytes = Vec::new();
+    file.take(16385).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 16384 {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let scope = text
+        .split_once("## Scope\n")?
+        .1
+        .split_once("\n## Objective")?
+        .0;
+    scope
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("- graphfather session: ")
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            scope.lines().find_map(|l| {
+                l.strip_prefix("- current session: ")
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_owned)
+            })
+        })
+        .or_else(|| std::env::var("COMPACTVETERAN_GRAPHFATHER_SESSION").ok())
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
