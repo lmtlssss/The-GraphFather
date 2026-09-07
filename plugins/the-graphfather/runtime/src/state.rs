@@ -41,6 +41,10 @@ struct Receipt {
     generation: u64,
     status: String,
     exit_code: Option<i32>,
+    #[serde(default)]
+    component: Option<String>,
+    #[serde(default)]
+    component_epoch: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Session {
@@ -54,15 +58,24 @@ struct Session {
     issues: Vec<Issue>,
     receipts: Vec<Receipt>,
     proof_generation: Option<u64>,
-    #[serde(default)] revision: u64,
-    #[serde(default)] input_epochs: BTreeMap<String,u64>,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    input_epochs: BTreeMap<String, u64>,
 }
 #[derive(Deserialize)]
-struct Revise { expected_revision:u64, reason:String, blueprint:Blueprint, #[serde(default)] invalidate:BTreeMap<String,String> }
+struct Revise {
+    expected_revision: u64,
+    reason: String,
+    blueprint: Blueprint,
+    #[serde(default)]
+    invalidate: BTreeMap<String, String>,
+}
 pub struct Store {
     c: Connection,
     id: String,
     data: std::path::PathBuf,
+    expected_revision: Option<u64>,
 }
 impl Store {
     pub fn open(d: &Path, id: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -80,7 +93,15 @@ impl Store {
         if v != SCHEMA as i64 {
             return Err("unsupported state schema".into());
         }
-        Ok(Self { c, id: id.into(), data:d.to_path_buf() })
+        Ok(Self {
+            c,
+            id: id.into(),
+            data: fs::canonicalize(d)?,
+            expected_revision: None,
+        })
+    }
+    pub fn set_expected_revision(&mut self, revision: Option<u64>) {
+        self.expected_revision = revision;
     }
     fn empty(&self) -> Session {
         Session {
@@ -98,7 +119,8 @@ impl Store {
             issues: vec![],
             receipts: vec![],
             proof_generation: None,
-            revision: 0, input_epochs: BTreeMap::new(),
+            revision: 0,
+            input_epochs: BTreeMap::new(),
         }
     }
     fn load(&self) -> Result<Session, Box<dyn std::error::Error>> {
@@ -117,7 +139,11 @@ impl Store {
                 if s.schema != SCHEMA || s.session_id != self.id {
                     return Err("invalid session document".into());
                 }
-                Ok(Session { revision: s.revision, input_epochs: s.input_epochs, ..s })
+                Ok(Session {
+                    revision: s.revision,
+                    input_epochs: s.input_epochs,
+                    ..s
+                })
             }
         }
     }
@@ -143,20 +169,57 @@ impl Store {
         if s.schema != SCHEMA || s.session_id != self.id {
             return Err("invalid session document".into());
         };
+        if k != "check_finished" {
+            if let Some(expected) = self.expected_revision {
+                if s.revision != expected {
+                    return Err("stale revision".into());
+                }
+            }
+        }
         let before = serde_json::to_string(&s)?;
         f(&mut s)?;
-        if serde_json::to_string(&s)? == before { tx.commit()?; return Ok(view(&s)); }
+        if serde_json::to_string(&s)? == before {
+            let path = publish_tx(&tx, &self.id, &self.data, &s)?;
+            tx.commit()?;
+            return Ok(with_path(view(&s), path));
+        }
         tx.execute("INSERT INTO sessions(id,document)VALUES(?,?) ON CONFLICT(id)DO UPDATE SET document=excluded.document",params![self.id,serde_json::to_string(&s)?])?;
         tx.execute(
             "INSERT INTO events(session_id,at,kind,data)VALUES(?,?,?,?)",
-            params![self.id, now(), k, serde_json::to_string(&data)?],
+            params![
+                self.id,
+                now(),
+                k,
+                serde_json::to_string(&if k == "revise" {
+                    json!({"reason":data["reason"],"old":before})
+                } else {
+                    data
+                })?
+            ],
         )?;
+        let path = publish_tx(&tx, &self.id, &self.data, &s)?;
         tx.commit()?;
-        publish(&s, &self.data)?;
-        Ok(view(&s))
+        Ok(with_path(view(&s), path))
     }
-    pub fn status(&self) -> Result<Value, Box<dyn std::error::Error>> {
-        let s=self.load()?; publish(&s,&self.data)?; Ok(view(&s))
+    pub fn status(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let empty = self.empty();
+        let tx = self
+            .c
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT document FROM sessions WHERE id=?",
+                [&self.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let s = match raw {
+            Some(x) => serde_json::from_str(&x)?,
+            None => empty,
+        };
+        let path = publish_tx(&tx, &self.id, &self.data, &s)?;
+        tx.commit()?;
+        Ok(with_path(view(&s), path))
     }
     pub fn plan(&mut self, file: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let bytes = if file == "-" {
@@ -192,22 +255,149 @@ impl Store {
         )
     }
     pub fn revise(&mut self, file: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        let mut bytes=Vec::new(); if file=="-" { io::stdin().take(131073).read_to_end(&mut bytes)?; } else { bytes=fs::read(file)?; }
-        if bytes.len()>131072 { return Err("revise input exceeds 128 KiB".into()); }
-        let req: Revise=serde_json::from_slice(&bytes)?; valid(&req.blueprint)?; validate_dependencies(&req.blueprint)?;
-        self.mutate("revise",json!({"reason":req.reason}),move|s|{
-            if s.revision!=req.expected_revision{return Err("stale revision".into())}
-            let prior=s.blueprint.clone().ok_or("plan a blueprint first")?;
-            if prior.objective==req.blueprint.objective&&prior.components==req.blueprint.components&&prior.layers==req.blueprint.layers&&prior.next==req.blueprint.next&&prior.dependencies==req.blueprint.dependencies&&req.invalidate.is_empty(){return Ok(())}
-            bound(&req.reason, MAX, "reason")?;
-            s.revision=s.revision.saturating_add(1);
-            s.blueprint=Some(req.blueprint.clone());
-            s.marks.retain(|l,_|req.blueprint.layers.contains(l));
-            for m in s.marks.values_mut(){m.retain(|c,_|req.blueprint.components.contains(c));}
-            for (c,l) in &req.invalidate { if let Some(i)=req.blueprint.layers.iter().position(|x|x==l){for x in req.blueprint.layers.iter().skip(i){s.marks.entry(x.clone()).or_default().remove(c);}} }
-            s.generation+=1;s.proof_generation=None;
-            let next=req.blueprint.layers.iter().find(|l|req.blueprint.components.iter().any(|c|s.marks.get(*l).and_then(|m|m.get(c)).is_none())).cloned();
-            if let Some(l)=next{s.phase="build".into();s.cursor=Cursor{layer:Some(l.clone()),incomplete_components:req.blueprint.components.iter().filter(|c|s.marks.get(&l).and_then(|m|m.get(*c)).is_none()).cloned().collect(),next:req.blueprint.next.clone()};}else{s.phase="proof".into();s.cursor.next="run a whole check".into();} Ok(())
+        let mut bytes = Vec::new();
+        if file == "-" {
+            io::stdin().take(131073).read_to_end(&mut bytes)?;
+        } else {
+            bytes = fs::read(file)?;
+        }
+        if bytes.len() > 131072 {
+            return Err("revise input exceeds 128 KiB".into());
+        }
+        let req: Revise = serde_json::from_slice(&bytes)?;
+        valid(&req.blueprint)?;
+        validate_dependencies(&req.blueprint)?;
+        bound(&req.reason, MAX, "reason")?;
+        for (c, l) in &req.invalidate {
+            component(&req.blueprint, c)?;
+            if !req.blueprint.layers.iter().any(|x| x == l) {
+                return Err("invalidate layer unknown".into());
+            }
+        }
+        self.mutate("revise", json!({"reason":req.reason}), move |s| {
+            if s.revision != req.expected_revision {
+                return Err("stale revision".into());
+            }
+            let prior = s.blueprint.clone().ok_or("plan a blueprint first")?;
+            if prior.objective == req.blueprint.objective
+                && prior.components == req.blueprint.components
+                && prior.layers == req.blueprint.layers
+                && prior.next == req.blueprint.next
+                && prior.dependencies == req.blueprint.dependencies
+                && req.invalidate.is_empty()
+            {
+                return Ok(());
+            }
+            let next_only = prior.objective == req.blueprint.objective
+                && prior.components == req.blueprint.components
+                && prior.layers == req.blueprint.layers
+                && prior.dependencies == req.blueprint.dependencies
+                && req.invalidate.is_empty();
+            s.revision = s.revision.saturating_add(1);
+            s.blueprint = Some(req.blueprint.clone());
+            if next_only {
+                s.cursor.next = req.blueprint.next.clone();
+                return Ok(());
+            }
+            s.marks
+                .retain(|l, _| l == "repair" || req.blueprint.layers.contains(l));
+            for m in s.marks.values_mut() {
+                m.retain(|c, _| req.blueprint.components.contains(c));
+            }
+            let mut affected: BTreeMap<String, usize> = BTreeMap::new();
+            for (c, l) in &req.invalidate {
+                affected.insert(
+                    c.clone(),
+                    req.blueprint.layers.iter().position(|x| x == l).unwrap(),
+                );
+            }
+            for c in req
+                .blueprint
+                .components
+                .iter()
+                .filter(|c| !prior.components.contains(c))
+            {
+                affected.entry(c.clone()).or_insert(0);
+            }
+            for c in prior
+                .components
+                .iter()
+                .filter(|c| !req.blueprint.components.contains(c))
+            {
+                for d in dependent_closure(c, &prior, &req.blueprint) {
+                    affected
+                        .entry(d)
+                        .and_modify(|x| *x = (*x).min(0))
+                        .or_insert(0);
+                }
+            }
+            for c in req.blueprint.components.iter() {
+                if prior.dependencies.get(c) != req.blueprint.dependencies.get(c) {
+                    affected
+                        .entry(c.clone())
+                        .and_modify(|x| *x = (*x).min(0))
+                        .or_insert(0);
+                }
+            }
+            let seeds: Vec<String> = affected.keys().cloned().collect();
+            for c in seeds {
+                let at = *affected.get(&c).unwrap();
+                for d in dependent_closure(&c, &prior, &req.blueprint) {
+                    let e = affected.entry(d).or_insert(at);
+                    *e = (*e).min(at);
+                }
+            }
+            for (c, at) in affected {
+                for l in req.blueprint.layers.iter().skip(at) {
+                    if let Some(m) = s.marks.get_mut(l) {
+                        m.remove(&c);
+                    }
+                }
+                if let Some(m) = s.marks.get_mut("repair") {
+                    m.remove(&c);
+                }
+                *s.input_epochs.entry(c).or_insert(0) += 1;
+            }
+            s.issues
+                .retain(|i| req.blueprint.components.contains(&i.component));
+            s.generation += 1;
+            s.proof_generation = None;
+            let next = req
+                .blueprint
+                .layers
+                .iter()
+                .find(|l| {
+                    req.blueprint
+                        .components
+                        .iter()
+                        .any(|c| s.marks.get(*l).and_then(|m| m.get(c)).is_none())
+                })
+                .cloned();
+            if let Some(l) = next {
+                s.phase = "build".into();
+                s.cursor = Cursor {
+                    layer: Some(l.clone()),
+                    incomplete_components: req
+                        .blueprint
+                        .components
+                        .iter()
+                        .filter(|c| s.marks.get(&l).and_then(|m| m.get(*c)).is_none())
+                        .cloned()
+                        .collect(),
+                    next: req.blueprint.next.clone(),
+                };
+            } else if s.issues.iter().any(|i| !i.resolved) {
+                s.phase = "repair".into();
+                s.cursor.layer = None;
+                s.cursor.incomplete_components = vec![];
+                s.cursor.next = "resolve open repair issues".into();
+            } else {
+                s.phase = "proof".into();
+                s.cursor.layer = None;
+                s.cursor.incomplete_components = vec![];
+                s.cursor.next = req.blueprint.next.clone();
+            }
+            Ok(())
         })
     }
     pub fn cursor(&mut self, t: String) -> Result<Value, Box<dyn std::error::Error>> {
@@ -281,6 +471,11 @@ impl Store {
                 .position(|x| x == &l)
                 .ok_or("invalid layer")?;
             if n + 1 == b.layers.len() {
+                if s.issues.iter().any(|i| !i.resolved) {
+                    s.phase = "repair".into();
+                    s.cursor.next = "resolve open repair issues".into();
+                    return Ok(());
+                }
                 s.phase = "proof".into();
                 s.cursor = Cursor {
                     layer: None,
@@ -288,9 +483,16 @@ impl Store {
                     next: "run a whole check".into(),
                 }
             } else {
+                let l = b.layers[n + 1].clone();
+                let incomplete = b
+                    .components
+                    .iter()
+                    .filter(|c| s.marks.get(&l).and_then(|m| m.get(*c)).is_none())
+                    .cloned()
+                    .collect::<Vec<_>>();
                 s.cursor = Cursor {
-                    layer: Some(b.layers[n + 1].clone()),
-                    incomplete_components: b.components.clone(),
+                    layer: Some(l),
+                    incomplete_components: incomplete,
                     next: b.next.clone(),
                 }
             }
@@ -330,6 +532,9 @@ impl Store {
             |s| {
                 project(s)?;
                 s.generation += 1;
+                for c in s.input_epochs.values_mut() {
+                    *c = c.saturating_add(1);
+                }
                 s.proof_generation = None;
                 if s.phase == "complete" {
                     s.phase = "proof".into();
@@ -367,6 +572,11 @@ impl Store {
             Some(x) => serde_json::from_str(&x)?,
             None => empty,
         };
+        if let Some(expected) = self.expected_revision {
+            if old.revision != expected {
+                return Err("stale revision".into());
+            }
+        }
         let fresh = Session {
             schema: SCHEMA,
             session_id: self.id.clone(),
@@ -395,8 +605,9 @@ impl Store {
                 serde_json::to_string(&json!({"reason":r,"old":view(&old)}))?
             ],
         )?;
+        let path = publish_tx(&tx, &self.id, &self.data, &fresh)?;
         tx.commit()?;
-        Ok(view(&fresh))
+        Ok(with_path(view(&fresh), path))
     }
     pub fn check(&mut self, a: &[String]) -> Result<Value, Box<dyn std::error::Error>> {
         let sep = a
@@ -413,8 +624,15 @@ impl Store {
             return Err("command required".into());
         }
         let mut why = None;
+        let mut scoped: Option<String> = None;
         let mut n = 2;
         while n < sep {
+            if a[n] == "--component" {
+                n += 1;
+                scoped = Some(a.get(n).ok_or("--component requires ID")?.clone());
+                n += 1;
+                continue;
+            }
             if a[n] != "--reason" {
                 return Err("unknown check option".into());
             }
@@ -428,6 +646,9 @@ impl Store {
         if !["smoke", "whole", "narrow", "safety"].contains(&kind.as_str()) {
             return Err("invalid check kind".into());
         }
+        if kind == "whole" && scoped.is_some() {
+            return Err("whole checks cannot be scoped".into());
+        }
         if kind == "smoke" && crate::hooks::recognized_argv(argv) {
             return Err("recognized test command requires whole or narrow check kind".into());
         }
@@ -437,6 +658,13 @@ impl Store {
             json!({"kind":kind,"label":label,"argv_sha256":hash,"reason":why}),
             |s| {
                 project(s)?;
+                if let Some(c) = &scoped {
+                    component(s.blueprint.as_ref().unwrap(), c)?;
+                }
+                let epoch = scoped
+                    .as_ref()
+                    .map(|c| *s.input_epochs.get(c).unwrap_or(&0))
+                    .unwrap_or(0);
                 match kind.as_str() {
                     "smoke" if s.phase != "build" => return Err("smoke only during build".into()),
                     "whole" if s.phase != "proof" => return Err("whole only in proof".into()),
@@ -446,7 +674,11 @@ impl Store {
                     _ => {}
                 }
                 if s.receipts.iter().any(|x| {
-                    x.generation == s.generation && x.kind == *kind && x.argv_sha256 == hash
+                    x.kind == *kind
+                        && x.argv_sha256 == hash
+                        && x.component == scoped
+                        && ((scoped.is_some() && x.component_epoch == epoch)
+                            || (scoped.is_none() && x.generation == s.generation))
                 }) {
                     return Err("same check already reserved at this generation".into());
                 }
@@ -457,11 +689,22 @@ impl Store {
                     generation: s.generation,
                     status: "running".into(),
                     exit_code: None,
+                    component: scoped.clone(),
+                    component_epoch: epoch,
                 });
                 Ok(())
             },
         )?;
         let g = r["generation"].as_u64().unwrap();
+        let epoch = scoped
+            .as_ref()
+            .map(|c| {
+                r.pointer("/input_epochs")
+                    .and_then(|x| x.get(c))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
         let z = Command::new(&argv[0]).args(&argv[1..]).status();
         let (ok, code, msg) = match z {
             Ok(x) => (x.success(), x.code().unwrap_or(1), None),
@@ -478,6 +721,8 @@ impl Store {
                         x.generation == g
                             && x.kind == *kind
                             && x.argv_sha256 == hash
+                            && x.component == scoped
+                            && x.component_epoch == epoch
                             && x.status == "running"
                     })
                     .ok_or("running receipt lost")?;
@@ -520,6 +765,38 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+fn publish_tx(
+    c: &rusqlite::Transaction<'_>,
+    id: &str,
+    data: &Path,
+    s: &Session,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let mut q = c.prepare(
+        "SELECT data FROM events WHERE session_id=? AND kind='revise' ORDER BY seq DESC LIMIT 8",
+    )?;
+    let rows = q.query_map([id], |r| r.get::<_, String>(0))?;
+    let mut h = Vec::new();
+    for x in rows {
+        let v: Value = serde_json::from_str(&x?)?;
+        let old = v
+            .get("old")
+            .and_then(Value::as_str)
+            .and_then(|x| serde_json::from_str::<Value>(x).ok())
+            .and_then(|x| x.get("revision").and_then(Value::as_u64))
+            .unwrap_or(0);
+        let reason = v
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        h.push((old, reason));
+    }
+    Ok(crate::markdown::publish(data, &view(s), &h)?)
+}
+fn with_path(mut v: Value, p: std::path::PathBuf) -> Value {
+    v["plan_path"] = json!(p);
+    v
+}
 fn hex(x: &[u8]) -> String {
     x.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -552,13 +829,46 @@ fn valid(b: &Blueprint) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-fn validate_dependencies(b:&Blueprint)->Result<(),Box<dyn std::error::Error>>{
- for (c,ps) in &b.dependencies { component(b,c)?; let mut seen=HashSet::new(); for p in ps { component(b,p)?; if p==c||!seen.insert(p){return Err("invalid dependency edge".into())} } }
- fn visit(x:&str,b:&Blueprint,stack:&mut HashSet<String>,done:&mut HashSet<String>)->bool{if done.contains(x){return false} if !stack.insert(x.into()){return true} for p in b.dependencies.get(x).into_iter().flatten(){if visit(p,b,stack,done){return true}} stack.remove(x);done.insert(x.into());false}
- let mut st=HashSet::new();let mut d=HashSet::new();for c in &b.components{if visit(c,b,&mut st,&mut d){return Err("dependency cycle".into())}} Ok(())
-}
-fn publish(s:&Session,root:&Path)->Result<(),Box<dyn std::error::Error>>{
- let dir=root.join("plans");fs::create_dir_all(&dir)?;perm(&dir,0o700)?;let name=hex(&Sha256::digest(s.session_id.as_bytes()));let p=dir.join(format!("{name}.md"));let b=s.blueprint.as_ref().map(|b|format!("objective: {}\ncomponents: {:?}\nlayers: {:?}\ndependencies: {:?}\n",b.objective,b.components,b.layers,b.dependencies)).unwrap_or_default();let text=format!("# the graphfather plan\n\n{b}\nphase: {}\nrevision: {}\ngeneration: {}\nnext: {}\n",s.phase,s.revision,s.generation,s.cursor.next);if fs::read_to_string(&p).ok().as_deref()!=Some(&text){let t=dir.join(format!(".{name}.{}.tmp",now()));fs::write(&t,text)?;perm(&t,0o600)?;fs::rename(t,p)?;}Ok(())
+fn validate_dependencies(b: &Blueprint) -> Result<(), Box<dyn std::error::Error>> {
+    for (c, ps) in &b.dependencies {
+        component(b, c)?;
+        let mut seen = HashSet::new();
+        for p in ps {
+            component(b, p)?;
+            if p == c || !seen.insert(p) {
+                return Err("invalid dependency edge".into());
+            }
+        }
+    }
+    fn visit(
+        x: &str,
+        b: &Blueprint,
+        stack: &mut HashSet<String>,
+        done: &mut HashSet<String>,
+    ) -> bool {
+        if done.contains(x) {
+            return false;
+        }
+        if !stack.insert(x.into()) {
+            return true;
+        }
+        for p in b.dependencies.get(x).into_iter().flatten() {
+            if visit(p, b, stack, done) {
+                return true;
+            }
+        }
+        stack.remove(x);
+        done.insert(x.into());
+        false
+    }
+    let mut st = HashSet::new();
+    let mut d = HashSet::new();
+    for c in &b.components {
+        if visit(c, b, &mut st, &mut d) {
+            return Err("dependency cycle".into());
+        }
+    }
+    Ok(())
 }
 fn project(s: &Session) -> Result<&Blueprint, Box<dyn std::error::Error>> {
     s.blueprint
@@ -571,6 +881,21 @@ fn component(b: &Blueprint, c: &str) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Err("unknown component".into())
     }
+}
+fn dependent_closure(seed: &str, old: &Blueprint, new: &Blueprint) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![seed.to_string()];
+    while let Some(x) = todo.pop() {
+        for b in [old, new] {
+            for (c, ds) in &b.dependencies {
+                if ds.iter().any(|d| d == &x) && !out.contains(c) {
+                    out.push(c.clone());
+                    todo.push(c.clone());
+                }
+            }
+        }
+    }
+    out
 }
 fn view(s: &Session) -> Value {
     json!({"schema":s.schema,"session_id":s.session_id,"phase":s.phase,"generation":s.generation,"revision":s.revision,"input_epochs":s.input_epochs,"blueprint":s.blueprint,"cursor":s.cursor,"marks":s.marks,"issues":s.issues,"receipts":s.receipts,"proof_generation":s.proof_generation})

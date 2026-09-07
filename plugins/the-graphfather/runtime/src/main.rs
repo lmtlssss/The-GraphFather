@@ -1,4 +1,5 @@
 mod hooks;
+mod markdown;
 mod state;
 mod trust;
 
@@ -19,11 +20,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut data = None;
     let mut session = env::var("CODEX_THREAD_ID").ok();
-    while !a.is_empty() && (a[0] == "--data-dir" || a[0] == "--session") {
+    let mut expected_revision = None;
+    while !a.is_empty() && (a[0] == "--data-dir" || a[0] == "--session" || a[0] == "--revision") {
         let k = a.remove(0);
         let v = a.first().ok_or("missing option value")?.clone();
         a.remove(0);
-        if k == "--data-dir" {
+        if k == "--revision" {
+            expected_revision = Some(v.parse::<u64>()?);
+        } else if k == "--data-dir" {
             data = Some(PathBuf::from(v))
         } else {
             session = Some(v)
@@ -66,6 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let session = session.ok_or("--session or CODEX_THREAD_ID is required")?;
     let mut s = Store::open(&data, &session)?;
+    s.set_expected_revision(expected_revision);
     let out = match cmd {
         "status" => s.status()?,
         "plan" => s.plan(a.get(1).ok_or("plan requires FILE")?)?,

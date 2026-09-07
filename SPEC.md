@@ -1,5 +1,82 @@
 # the graphfather — build contract
 
+## v0.2 live-plan amendment (latest person authority)
+
+the person approved a living Markdown plan per conversation, reconciled on every
+user turn by the agent already handling that turn. write only actual changes;
+preserve valid work and proof. do not modify Codex's native /plan, add model calls,
+or infer semantic scope changes in a Rust hook. this amendment supersedes the
+fixed-blueprint limitation below. release as v0.2.0.
+
+keep SQLite as the transactional revision/receipt ledger. publish its accepted
+plan and progress as a private, readable Markdown file at
+PLUGIN_DATA/plans/<sha256-session-id>.md. the agent maintains it through the CLI,
+not by independently editing two authorities. status and lifecycle hooks return
+the absolute plan path and revision. Markdown includes objective, components and
+dependencies, layer progress, exact next action and recent superseded revisions.
+atomic replacement, 0600 files/0700 directories; unchanged content keeps mtime.
+recover a missing/stale Markdown projection from committed state on access.
+serialize publication with state writers so an older writer cannot overwrite a
+newer plan. old v0.1 documents load with defaulted new fields; retain all records.
+
+extend blueprint with optional dependencies: {component: [prerequisite IDs]}.
+reject unknown IDs, self edges, duplicates and cycles. omitted means no edges.
+
+add `revise FILE` (also `-` stdin) accepting:
+```
+{"expected_revision":1,"reason":"add the export view",
+ "blueprint":{"objective":"build the app","components":["api","ui","export"],
+ "layers":["scaffold","behavior"],"next":"scaffold export",
+ "dependencies":{"ui":["api"],"export":["api"]}},
+ "invalidate":{"ui":"behavior"}}
+```
+revision is an optimistic concurrency guard. reject stale revisions atomically.
+validate everything before mutation. identical blueprint with no invalidation is
+a no-op: no new revision/generation/event or Markdown rewrite. cursor unchanged
+is also a no-op. initial plan gets revision 1; old documents may start at 0.
+
+preserve marks for surviving component/layer IDs unless explicitly invalidated.
+invalidate names the earliest affected layer; clear that layer and later marks
+for the component and transitive dependents. added components start at scaffold.
+changed dependency edges invalidate the changed component and dependents from
+scaffold; use old and new edges to account for removal. removed components/layers
+are removed from current marks but remain in the archived prior state. new layers start
+unmarked across all components. choose the earliest incomplete layer after an
+amendment; if none, proof. preserve unresolved surviving issues and repair flow
+when no earlier construction is required; do not silently lose an open issue.
+next-action-only revision preserves phase and proof. semantic/scope revisions
+invalidate global whole proof and reopen completion, but retain unaffected marks.
+archive prior plan/state with bounded reason in the existing events table.
+
+add optional global `--revision N` for guarded writes (mark, cursor, advance,
+issue, changed, reset and check reservation). lifecycle command context supplies
+the current revision; agent/worker instructions require using it and refreshing
+after a conflict. keep old callers compatible when omitted. validate inside the
+write transaction, not a racy pre-read. recording a running check's later result
+must still succeed after a steer, but stale results cannot bless current proof.
+
+extend check with optional `--component ID` for smoke/narrow/safety, never whole.
+retain per-component input epochs so an unaffected scoped receipt still blocks
+an unchanged repeat after another component changes. affected components and
+their dependents advance epochs. legacy/unscoped receipts use global generation.
+unscoped changed/observed code patches conservatively invalidate all input epochs
+because the plugin cannot infer their semantic impact. keep that limit explicit.
+do not permit an in-flight old whole check to bless a later revision.
+
+UserPromptSubmit tells the existing agent to read the pinned plan and reconcile
+the latest instruction before continuing. questions/no scope changes need no
+revision. steers use revise, not reset; reset remains for a genuinely new task.
+all lifecycle context remains bounded with command/session/plan/revision before
+long user-authored fields. native five-hook topology and trust ownership stay.
+
+assembly: runtime/commands/Markdown + hook/skill instructions + packaging/docs;
+compile smoke only until joined. integrated proof then covers real CLI plan and
+Markdown, mid-build additions/removals, dependency invalidation, layer changes,
+completion reopening, no-op bytes/mtime/events, concurrent stale revisions,
+scoped receipt preservation, old-state migration, publication recovery, hook
+context and the existing lifecycle suite. then release CI, checksum-verified
+upgrade, actual native five-hook trust and unrelated-config preservation.
+
 ## authority
 
 repository: https://github.com/lmtlssss/The-GraphFather
