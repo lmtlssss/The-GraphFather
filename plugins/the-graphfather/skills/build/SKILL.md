@@ -42,6 +42,22 @@ transitive dependents from the earliest affected layer. identical blueprints
 without invalidation are no-ops. next-action-only revisions preserve phase;
 semantic changes reopen whole proof.
 
+for a guarded write, pass the revision returned by `status` or the lifecycle
+hook as `expected_revision` (equivalently `--revision N` when the installed CLI
+offers that flag). use this working example:
+
+```json
+{"expected_revision":1,"reason":"add the export view",
+ "blueprint":{"objective":"build the app","components":["api","ui","export"],
+ "layers":["scaffold","behavior"],"next":"scaffold export",
+ "dependencies":{"ui":["api"],"export":["api"]}},
+ "invalidate":{"ui":"behavior"}}
+```
+
+If the revision is stale, refresh `status` or the hook context and retry with
+the new revision. After a successful `revise`, use the returned new revision
+for the next guarded write. Preserve valid work; steer with `revise`, not reset.
+
 `check smoke|narrow|safety LABEL --component ID -- COMMAND` scopes a receipt to
 one component; `whole` remains unscoped. unscoped observed patches
 conservatively invalidate all component epochs.

@@ -24,6 +24,8 @@ conversation  ──►  blueprint  ──►  whole scaffold
                                       ▼
                                   completion
 
+                         steer ──► revision ──► retained work
+
 session + cursor + receipts  ──►  local SQLite  ──►  resume
 ```
 
@@ -66,6 +68,8 @@ project. a short task gets a short plan; the person does not fill out forms.
 
 the cursor survives a new turn, resume, and compaction. CompactVeteran continues
 to own its handoff behavior; RecentlyDivorced continues to own conversation labels.
+Codex's native `/plan` remains unchanged; GraphFather's `revise` updates only its
+own accepted project plan.
 
 ## living plan
 
@@ -86,6 +90,7 @@ command                         action
 ──────────────────────────────────────────────────────────────
 status                          read project state
 plan FILE                       register the blueprint
+revise FILE                    guardedly amend the living plan
 cursor TEXT                     save the exact next action
 mark COMPONENT EVIDENCE         complete work in this layer
 advance                         cross the whole-layer gate
@@ -116,6 +121,7 @@ check receipts retain the argument hash and result, not raw command arguments.
 ${CODEX_HOME:-$HOME/.codex}/plugins/data/the-graphfather-the-graphfather/
     the-graphfather
     state.sqlite
+    plans/<sha256-session-id>.md
 ```
 
 state is private and local. routine hooks do not call a model or read transcripts.
