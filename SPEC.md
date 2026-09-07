@@ -1,11 +1,11 @@
-# the gitfather — build contract
+# the graphfather — build contract
 
 ## authority
 
-repository: https://github.com/lmtlssss/The-GitFather
+repository: https://github.com/lmtlssss/The-GraphFather
 
 approved description:
-“i’m gonna make him an offer he can’t refuse.” — for codex agents with commitment issues.
+“i’m gonna make him an offer he can’t refuse.” — for Codex agents with commitment issues.
 
 the person's requirement: every Codex conversation is a project. complete the
 entire scaffold, then each ordered layer across the entire project; test the
@@ -36,7 +36,7 @@ fully observable. document these limits instead of promising absolute prevention
 .github/workflows/{ci,release}.yml
 README.md  LICENSE  install.sh  uninstall.sh
 scripts/prove-system.sh
-plugins/the-gitfather/
+plugins/the-graphfather/
   .codex-plugin/plugin.json
   hooks/hooks.json
   skills/build/SKILL.md
@@ -44,9 +44,9 @@ plugins/the-gitfather/
   runtime/src/{main,state,hooks}.rs
 ```
 
-marketplace and plugin identifier: the-gitfather. executable: the-gitfather.
-installed executable/data: ${CODEX_HOME}/plugins/data/the-gitfather-the-gitfather.
-hooks use quoted ${PLUGIN_DATA}/the-gitfather, never the Desktop source path.
+marketplace and plugin identifier: the-graphfather. executable: the-graphfather.
+installed executable/data: ${CODEX_HOME}/plugins/data/the-graphfather-the-graphfather.
+hooks use quoted ${PLUGIN_DATA}/the-graphfather, never the Desktop source path.
 
 ## state
 
@@ -54,7 +54,7 @@ one record per conversation session ID, shared by its subagents. hook events
 supply session_id; CLI takes --session ID or CODEX_THREAD_ID. never merge unrelated
 conversations merely because cwd matches. SQLite transactions serialize updates.
 use schema version 1, busy timeout, private data directory/file permissions.
---data-dir or GITFATHER_DATA overrides PLUGIN_DATA/default for isolated tests.
+--data-dir or GRAPHFATHER_DATA overrides PLUGIN_DATA/default for isolated tests.
 do not store full prompts/tool output/secrets; only bounded explicit project data,
 command receipt metadata and append-only state events. cap stdin at 128 KiB.
 
@@ -99,7 +99,7 @@ global options: --data-dir DIR, --session ID (before subcommand).
 - hook: bounded JSON stdin, dispatch by hook_event_name, JSON stdout.
 - doctor: verify writable state plus schema, print concise checks.
 - trust / untrust: use stock Codex app-server hooks/list + config/batchWrite to
-  change ONLY hooks whose pluginId is the-gitfather@the-gitfather. use returned
+  change ONLY hooks whose pluginId is the-graphfather@the-graphfather. use returned
   keys/currentHash, never guessed hashes. bounded timeout/owned-child cleanup.
 
 state mutation commands return compact JSON including the cursor. unknown or
@@ -107,7 +107,7 @@ invalid input exits nonzero without partial changes. tests use disposable dirs.
 
 ## hooks
 
-SessionStart, UserPromptSubmit, PostCompact, SubagentStart: concise project/cursor
+SessionStart, UserPromptSubmit, SubagentStart: concise project/cursor
 context plus the installed binary path and session ID. initialize only an empty
 record, never infer a blueprint from raw text. max ~1500 characters per injection.
 small tasks use a small blueprint; never require the person to author it.
@@ -124,7 +124,6 @@ PreToolUse (all):
 
 PostToolUse: successful apply_patch advances generation/invalidate prior proof.
 do not persist patch bodies. unchanged reads/polls must not count as progress.
-Stop: concise advisory cursor only, never force an infinite continuation loop.
 do not intercept compaction or interfere with CompactVeteran's existing hooks.
 
 native wire contracts: PreToolUse deny is hookSpecificOutput.permissionDecision

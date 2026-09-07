@@ -1,0 +1,7 @@
+{"hooks": {
+  "SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-graphfather\" hook","timeout":10}]}],
+  "UserPromptSubmit":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-graphfather\" hook","timeout":10}]}],
+  "SubagentStart":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-graphfather\" hook","timeout":10}]}],
+  "PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-graphfather\" hook","timeout":10}]}],
+  "PostToolUse":[{"matcher":"apply_patch","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-graphfather\" hook","timeout":10}]}]
+}}

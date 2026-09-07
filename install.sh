@@ -1,8 +1,15 @@
 #!/usr/bin/env sh
 set -eu
-codex="${CODEX_BIN:-codex}"; source="${GITFATHER_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"; data="${CODEX_HOME:-$HOME/.codex}/plugins/data/the-gitfather-the-gitfather"; binary=""
-while [ $# -gt 0 ]; do case "$1" in --binary) binary=$2; shift 2;; --codex) codex=$2; shift 2;; --source) source=$2; shift 2;; *) echo "unknown option: $1" >&2; exit 2;; esac; done
-if [ -z "$binary" ]; then binary=$(mktemp); sum=$(mktemp); trap 'rm -f "$binary" "$sum"' EXIT; url=https://github.com/lmtlssss/The-GitFather/releases/latest/download/the-gitfather-x86_64-unknown-linux-gnu; curl -fsSL "$url" -o "$binary"; curl -fsSL "$url.sha256" -o "$sum"; (cd "$(dirname "$binary")" && sha256sum -c "$sum"); fi
-[ -f "$binary" ] || { echo "binary not found" >&2; exit 1; }; mkdir -p "$data"; tmp="$data/.the-gitfather.tmp.$$"; install -m 0755 "$binary" "$tmp"; mv -f "$tmp" "$data/the-gitfather"
-"$codex" plugin marketplace add "$source" >/dev/null 2>&1 || true; "$codex" plugin add the-gitfather@the-gitfather >/dev/null; "$data/the-gitfather" trust
-printf '%s\n' "the-gitfather installed at $data/the-gitfather"
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+codex="${CODEX_BIN:-codex}"; source="https://github.com/lmtlssss/The-GraphFather"; binary=""; codex_dir="${CODEX_HOME:-$HOME/.codex}"
+while [ $# -gt 0 ]; do case "$1" in --binary) binary=$2;shift 2;;--source) source=$2;shift 2;;--codex) codex=$2;shift 2;;--code-home) codex_dir=$2;shift 2;;*) echo "unknown option: $1" >&2;exit 2;;esac;done
+data="$codex_dir/plugins/data/the-graphfather-the-graphfather"; old="$data/the-graphfather"; backup="$data/.the-graphfather.backup.$$"; made=0
+cleanup(){ if [ -n "${tmp:-}" ]; then rm -f "$tmp" "${sum:-}"; fi; }
+rollback(){ if [ -e "$backup" ];then mv -f "$backup" "$old";elif [ "$made" = 1 ];then rm -f "$old";fi; }
+trap cleanup EXIT HUP INT TERM
+if [ -z "$binary" ];then tmp=$(mktemp);sum=$(mktemp);url=https://github.com/lmtlssss/The-GraphFather/releases/latest/download/the-graphfather-x86_64-unknown-linux-gnu;curl -fsSL "$url" -o "$tmp";curl -fsSL "$url.sha256" -o "$sum";expected=$(awk 'NF{print $1;exit}' "$sum");actual=$(sha256sum "$tmp"|awk '{print $1}');[ "$expected" = "$actual" ]||{ echo "release checksum mismatch" >&2;exit 1;};binary=$tmp;fi
+[ -f "$binary" ]||{ echo "binary not found" >&2;exit 1;}
+mkdir -p "$data";chmod 700 "$data";candidate="$data/.the-graphfather.candidate.$$";install -m 0755 "$binary" "$candidate";if ! "$candidate" --version >/dev/null;then rm -f "$candidate";exit 1;fi
+if [ -e "$old" ];then mv "$old" "$backup";else made=1;fi
+if ! mv "$candidate" "$old" || ! CODEX_HOME="$codex_dir" "$codex" plugin marketplace add "$source" || ! CODEX_HOME="$codex_dir" "$codex" plugin add the-graphfather@the-graphfather || ! CODEX_HOME="$codex_dir" CODEX_BIN="$codex" "$old" --data-dir "$data" trust;then rm -f "$candidate";rollback;echo "install rolled back" >&2;exit 1;fi
+rm -f "$backup";printf '%s\n' "the-graphfather installed at $old"
