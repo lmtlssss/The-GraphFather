@@ -1,0 +1,20 @@
+{
+  "name": "the-gitfather",
+  "interface": {
+    "displayName": "The Gitfather"
+  },
+  "plugins": [
+    {
+      "name": "the-gitfather",
+      "source": {
+        "source": "local",
+        "path": "./plugins/the-gitfather"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

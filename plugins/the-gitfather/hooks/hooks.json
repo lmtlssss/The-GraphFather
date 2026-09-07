@@ -1,0 +1,9 @@
+{
+  "SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "UserPromptSubmit":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "PostCompact":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "SubagentStart":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}],
+  "Stop":[{"matcher":"*","hooks":[{"type":"command","command":"\"${PLUGIN_DATA}/the-gitfather\" hook","timeout":10}]}]
+}

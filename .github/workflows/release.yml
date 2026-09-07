@@ -1,0 +1,18 @@
+name: release-plugin
+on:
+  workflow_dispatch:
+    inputs:
+      tag: {description: release tag, required: true, type: string}
+permissions: {contents: write}
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked --manifest-path plugins/the-gitfather/runtime/Cargo.toml
+      - env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          install -m 0755 plugins/the-gitfather/runtime/target/release/the-gitfather the-gitfather-x86_64-unknown-linux-gnu
+          sha256sum the-gitfather-x86_64-unknown-linux-gnu > the-gitfather-x86_64-unknown-linux-gnu.sha256
+          gh release create "${{ inputs.tag }}" the-gitfather-x86_64-unknown-linux-gnu* --title "${{ inputs.tag }}" --generate-notes

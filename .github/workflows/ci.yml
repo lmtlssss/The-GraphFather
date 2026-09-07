@@ -1,0 +1,11 @@
+name: verify
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --manifest-path plugins/the-gitfather/runtime/Cargo.toml
+      - run: python3 -m json.tool plugins/the-gitfather/.codex-plugin/plugin.json >/dev/null
+      - run: python3 -m json.tool plugins/the-gitfather/hooks/hooks.json >/dev/null
